@@ -158,9 +158,11 @@ func (p *process) create() error {
 		}
 
 	} else {
+		exitStatusPipe := filepath.Join(cwd, "runtimeExitStatus")
 		args = append(args, "create",
 			"--bundle", p.bundle,
 			"--console", p.consolePath,
+			"--exit-status-pipe", exitStatusPipe,
 		)
 		if p.state.NoPivotRoot {
 			args = append(args, "--no-pivot")

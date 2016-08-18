@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/containerd/osutils"
 	"github.com/docker/docker/pkg/term"
+	"golang.org/x/sys/unix"
 )
 
 func writeMessage(f *os.File, level string, err error) {
@@ -83,6 +84,32 @@ func start(log *os.File) error {
 			writeMessage(log, "warn", err)
 		}
 	}()
+	// Create a named pipe in case the runtime wants to use it to return
+	// an exit status instead of the usual result from reaping the process.
+	// This can be used by VM based runtime.
+	exitStatus := -1
+	if err := unix.Mkfifo("runtimeExitStatus", 0755); err != nil && !os.IsExist(err) {
+		return err
+	}
+	statusC := make(chan int, 1)
+	go func() {
+		statusPipe, err := os.OpenFile("runtimeExitStatus", syscall.O_RDONLY, 0)
+		if err != nil {
+			writeMessage(log, "error", err)
+			statusC <- -1
+			return
+		}
+		for {
+			var ret int
+			if _, err := fmt.Fscanf(statusPipe, "%d\n", &ret); err != nil {
+				writeMessage(log, "status", err)
+				continue
+			}
+			statusC <- ret
+			statusPipe.Close()
+			return
+		}
+	}()
 	if err := p.create(); err != nil {
 		p.delete()
 		return err
@@ -108,7 +135,10 @@ func start(log *os.File) error {
 					// check to see if runtime is one of the processes that has exited
 					if e.Pid == p.pid() {
 						exitShim = true
-						writeInt("exitStatus", e.Status)
+						if exitStatus == -1 {
+							exitStatus = e.Status
+						}
+						writeInt("exitStatus", exitStatus)
 					}
 				}
 			}
@@ -136,6 +166,8 @@ func start(log *os.File) error {
 				}
 				term.SetWinsize(p.console.Fd(), &ws)
 			}
+		case status := <-statusC:
+			exitStatus = status
 		}
 	}
 	return nil
